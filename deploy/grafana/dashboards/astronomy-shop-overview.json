@@ -1,0 +1,106 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "webstore-metrics"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "sum by (span_name) (rate(traces_span_metrics_calls_total{service_name=~\"(${service:regex})\"}[$__rate_interval]))", "legendFormat": "{{span_name}}", "range": true, "refId": "A"}],
+      "title": "Tasa de solicitudes por operación",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "webstore-metrics"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "sum by (span_name) (rate(traces_span_metrics_calls_total{status_code=\"STATUS_CODE_ERROR\",service_name=~\"(${service:regex})\"}[$__rate_interval]))", "legendFormat": "{{span_name}}", "range": true, "refId": "A"}],
+      "title": "Tasa de errores",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "webstore-metrics"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_span_metrics_duration_milliseconds_bucket{service_name=~\"(${service:regex})\"}[$__rate_interval])))", "legendFormat": "{{span_name}}", "range": true, "refId": "A"}],
+      "title": "Latencia p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "aiopslab-infra-metrics"},
+      "fieldConfig": {"defaults": {"unit": "cores"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 4,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"astronomy-shop\",container!=\"\",pod!=\"\"}[$__rate_interval]))", "legendFormat": "{{pod}}", "range": true, "refId": "A"}],
+      "title": "CPU por pod",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "aiopslab-infra-metrics"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 5,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"astronomy-shop\",container!=\"\",pod!=\"\"})", "legendFormat": "{{pod}}", "range": true, "refId": "A"}],
+      "title": "Memoria por pod",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "webstore-logs"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 16, "x": 0, "y": 16},
+      "id": 6,
+      "options": {"cellHeight": "sm", "showHeader": true},
+      "targets": [{"bucketAggs": [], "format": "table", "metrics": [{"id": "1", "settings": {"order": "desc", "size": "100", "useTimeRange": true}, "type": "raw_data"}], "query": "source = otel-logs-*\n| where `resource.attributes.service.name` in (${service:singlequote})\n| sort - `@timestamp`\n| head 100", "queryType": "PPL", "refId": "A", "timeField": "@timestamp"}],
+      "title": "Registros recientes",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "jaeger", "uid": "webstore-traces"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 8, "x": 16, "y": 16},
+      "id": 7,
+      "options": {"cellHeight": "sm", "showHeader": true},
+      "targets": [{"limit": 20, "operation": "", "queryType": "search", "refId": "A", "service": "$service", "tags": ""}],
+      "title": "Trazas recientes",
+      "type": "table"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 42,
+  "tags": ["aiopslab", "opentelemetry", "astronomy-shop"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {"type": "prometheus", "uid": "webstore-metrics"},
+        "definition": "label_values(traces_span_metrics_calls_total, service_name)",
+        "includeAll": false,
+        "label": "Servicio",
+        "multi": false,
+        "name": "service",
+        "query": {"query": "label_values(traces_span_metrics_calls_total, service_name)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 1,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "AIOpsLab — Astronomy Shop",
+  "uid": "aiopslab-astronomy-shop",
+  "version": 1
+}

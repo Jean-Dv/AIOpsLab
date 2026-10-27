@@ -1,0 +1,32 @@
+# AIOpsLab observability profile for the OpenTelemetry Astronomy Shop.
+# Grafana runs separately with Docker; this chart keeps only the telemetry
+# collector and its storage/query backends inside Kubernetes.
+
+grafana:
+  enabled: false
+
+components:
+  frontend-proxy:
+    service:
+      type: NodePort
+      nodePort: 30080
+
+prometheus:
+  enabled: true
+  server:
+    persistentVolume:
+      enabled: false
+    service:
+      type: NodePort
+      nodePort: 32001
+
+jaeger:
+  enabled: true
+
+opensearch:
+  enabled: true
+  persistence:
+    enabled: false
+  service:
+    type: NodePort
+    nodePort: 32200

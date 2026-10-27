@@ -2,7 +2,8 @@
 # Licensed under the MIT License.
 
 import json
-from aiopslab.paths import TARGET_MICROSERVICES
+import os
+from aiopslab.paths import BASE_DIR, TARGET_MICROSERVICES
 
 
 class Application:
@@ -30,15 +31,26 @@ class Application:
         if "Helm Config" in metadata:
             self.helm_configs = metadata["Helm Config"]
             chart_path = self.helm_configs.get("chart_path")
-            
+
             if chart_path and not self.helm_configs.get("remote_chart", False):
                 self.helm_configs["chart_path"] = str(TARGET_MICROSERVICES / chart_path)
 
+            if "values_files" in self.helm_configs:
+                values_files = self.helm_configs["values_files"]
+                if isinstance(values_files, (str, os.PathLike)):
+                    values_files = [values_files]
+                self.helm_configs["values_files"] = [
+                    str(path) if os.path.isabs(str(path)) else str(BASE_DIR / path)
+                    for path in values_files
+                ]
+
         if "K8S Deploy Path" in metadata:
             self.k8s_deploy_path = TARGET_MICROSERVICES / metadata["K8S Deploy Path"]
-        
+
         if "Docker Deploy Path" in metadata:
-            self.docker_deploy_path = TARGET_MICROSERVICES / metadata["Docker Deploy Path"]
+            self.docker_deploy_path = (
+                TARGET_MICROSERVICES / metadata["Docker Deploy Path"]
+            )
 
     def get_app_json(self) -> dict:
         """Get application metadata in JSON format.

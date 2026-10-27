@@ -4,6 +4,7 @@
 """Interface for helm operations"""
 
 import os
+import shlex
 import subprocess
 
 from aiopslab.service.kubectl import KubeCtl
@@ -29,7 +30,8 @@ class Helm:
             chart_path (str): Path to the helm chart
             namespace (str): Namespace to install the chart
             version (str): Version of the chart
-            extra_args (List[str)]: Extra arguments for the helm install command
+            extra_args (List[str]): Extra arguments for the helm install command
+            values_files (str | List[str]): Helm values files applied in order
             remote_chart (bool): Whether the chart is remote (from a Helm repo)
         """
         print("== Helm Install ==")
@@ -38,6 +40,7 @@ class Helm:
         namespace = args.get("namespace")
         version = args.get("version")
         extra_args = args.get("extra_args")
+        values_files = args.get("values_files", [])
         remote_chart = args.get("remote_chart", False)
 
         Helm._validate_chart_path(chart_path, remote_chart)
@@ -53,21 +56,42 @@ class Helm:
             )
             dependency_output, dependency_error = dependency_process.communicate()
 
-        command = f"helm install {release_name} {chart_path} -n {namespace} --create-namespace"
+        command = [
+            "helm",
+            "install",
+            release_name,
+            str(chart_path),
+            "-n",
+            namespace,
+            "--create-namespace",
+        ]
 
         if version:
-            command += f" --version {version}"
+            command.extend(["--version", str(version)])
+
+        if isinstance(values_files, (str, os.PathLike)):
+            values_files = [values_files]
+        for values_file in values_files:
+            command.extend(["-f", str(values_file)])
 
         if extra_args:
-            command += " " + " ".join(extra_args)
+            if isinstance(extra_args, str):
+                extra_args = [extra_args]
+            for extra_arg in extra_args:
+                command.extend(shlex.split(str(extra_arg)))
 
-        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         output, error = process.communicate()
 
-        if error:
-            print(error.decode("utf-8"))
-        else:
-            print(output.decode("utf-8"))
+        if process.returncode != 0:
+            message = error.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Helm install failed: {message}")
+
+        print(output.decode("utf-8", errors="replace"))
 
     @staticmethod
     def uninstall(**args):
@@ -210,14 +234,14 @@ class Helm:
     @staticmethod
     def status(release_name: str, namespace: str) -> str:
         """Get the status of a Helm release.
-        
+
         Args:
             release_name (str): Name of the release.
             namespace (str): Namespace of the release.
-        
+
         Returns:
             str: Status output from Helm.
-        
+
         Raises:
             ValueError: If either parameter is missing.
             Exception: If the helm status command fails.
@@ -234,9 +258,12 @@ class Helm:
 
         if process.returncode != 0:
             # helm status failed
-            raise RuntimeError(f"Failed to get status for release {release_name}: {error.decode('utf-8')}")
+            raise RuntimeError(
+                f"Failed to get status for release {release_name}: {error.decode('utf-8')}"
+            )
 
         return output.decode("utf-8").strip()
+
 
 # Example usage
 if __name__ == "__main__":

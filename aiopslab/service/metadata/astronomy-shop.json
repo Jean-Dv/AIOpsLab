@@ -17,6 +17,10 @@
         "release_name": "astronomy-shop",
         "chart_path": "open-telemetry/opentelemetry-demo",
         "namespace": "astronomy-shop",
-        "remote_chart": true
+        "remote_chart": true,
+        "version": "0.42.6",
+        "values_files": [
+            "observer/grafana/astronomy-shop-values.yaml"
+        ]
     }
 }

@@ -166,9 +166,18 @@ To browse your logged `session_id` values in the W&B app as a table:
 <h2 id="⚙️usage">⚙️ Usage</h2>
 
 AIOpsLab can be used in the following ways:
+- [Observe Astronomy Shop with Grafana](#observe-astronomy-shop-with-grafana)
 - [Onboard your agent to AIOpsLab](#how-to-onboard-your-agent-to-aiopslab)
 - [Add new applications to AIOpsLab](#how-to-add-new-applications-to-aiopslab)
 - [Add new problems to AIOpsLab](#how-to-add-new-problems-to-aiopslab)
+
+### Observe Astronomy Shop with Grafana
+
+The Astronomy Shop profile exports application metrics, logs, and traces to
+Prometheus, OpenSearch, and Jaeger. A separately managed Docker container runs
+Grafana with provisioned data sources and a starter dashboard. The
+[local deployment guide](deploy/grafana/README.md) covers cluster creation,
+deployment, validation, shutdown, restart, and complete removal.
 
 ### Running agents remotely
 You can run AIOpsLab on a remote machine with larger computational resources. This section guides you through setting up and using AIOpsLab remotely.

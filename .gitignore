@@ -123,6 +123,7 @@ celerybeat.pid
 
 # Environments
 .env
+deploy/grafana/.env
 .venv
 env/
 venv/
