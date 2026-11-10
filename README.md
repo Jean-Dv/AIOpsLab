@@ -179,6 +179,14 @@ Grafana with provisioned data sources and a starter dashboard. The
 [local deployment guide](deploy/grafana/README.md) covers cluster creation,
 deployment, validation, shutdown, restart, and complete removal.
 
+The [streaming telemetry ETL guide](deploy/etl/README.md) adds a dedicated
+Kafka, Apache Flink, ClickHouse, and Parquet/MinIO path while retaining the
+original Prometheus, OpenSearch, and Jaeger exports. It also provides the
+controlled normal/fault/recovery experiment and quantitative profiling tools.
+The [complete ETL design document](docs/etl_multimodal.md) explains its
+architecture, data contracts, streaming methodology, delivery guarantees,
+experimental protocol, diagrams, limitations, and current validation status.
+
 ### Running agents remotely
 You can run AIOpsLab on a remote machine with larger computational resources. This section guides you through setting up and using AIOpsLab remotely.
 

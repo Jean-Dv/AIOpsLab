@@ -1,114 +1,117 @@
-# Despliegue local de AIOpsLab con Grafana
+# Local AIOpsLab deployment with Grafana
 
-Esta guía levanta el entorno local completo utilizado para observar Astronomy
-Shop: un clúster Kubernetes de dos nodos con `kind`, Prometheus de
-infraestructura, Astronomy Shop, OpenTelemetry Collector, Prometheus de
-aplicación, OpenSearch, Jaeger y Grafana.
+This guide starts the complete local environment used to observe Astronomy Shop:
+a two-node Kubernetes cluster managed by kind, infrastructure Prometheus,
+Astronomy Shop, OpenTelemetry Collector, application Prometheus, OpenSearch,
+Jaeger, and Grafana.
 
-Grafana se ejecuta **exclusivamente como contenedor Docker**. No se instala en
-el sistema anfitrión. Helm también se ejecuta desde una imagen Docker en los
-comandos de esta guía.
+Grafana runs **only as a Docker container**. It is not installed on the host.
+Helm also runs from a Docker image in the commands below.
 
-## Arquitectura desplegada
+The streaming ETL is documented separately in
+[the ETL operational guide](../etl/README.md) and the
+[complete ETL design document](../../docs/etl_multimodal.md).
 
-| Componente | Ejecución | Función |
+## Deployed architecture
+
+| Component | Runtime | Purpose |
 |---|---|---|
-| `kind-control-plane` y `kind-worker` | Docker | Clúster Kubernetes local |
-| Prometheus de infraestructura | Kubernetes, namespace `observe` | Métricas del clúster y los pods |
-| Astronomy Shop | Kubernetes, namespace `astronomy-shop` | Sistema distribuido instrumentado |
-| Prometheus de aplicación | Kubernetes | Métricas y métricas derivadas de trazas |
-| OpenSearch | Kubernetes | Almacenamiento y consulta de logs |
-| Jaeger | Kubernetes | Almacenamiento y consulta de trazas |
-| Grafana | Docker Compose | Consulta y presentación de las tres señales |
+| <code>kind-control-plane</code> and <code>kind-worker</code> | Docker | Local Kubernetes cluster |
+| Infrastructure Prometheus | Kubernetes, <code>observe</code> namespace | Cluster and pod metrics |
+| Astronomy Shop | Kubernetes, <code>astronomy-shop</code> namespace | Instrumented distributed system |
+| Application Prometheus | Kubernetes | Application metrics and trace-derived metrics |
+| OpenSearch | Kubernetes | Log storage and queries |
+| Jaeger | Kubernetes | Trace storage and queries |
+| Grafana | Docker Compose | Query and presentation layer |
 
-## 1. Requisitos
+## 1. Requirements
 
-- Linux x86-64 o ARM64. En Windows se recomienda WSL2 con Docker Desktop.
-- Docker en ejecución.
-- `kind` 0.27.0 o compatible.
-- `kubectl` compatible con Kubernetes 1.32.
-- Al menos 8 CPU, 16 GB de RAM disponibles y 25 GB libres en disco.
-- Acceso a Internet durante el primer despliegue para descargar imágenes y el
-  chart de Astronomy Shop.
+- Linux x86-64 or ARM64. WSL2 with Docker Desktop is recommended on Windows.
+- A running Docker engine.
+- kind 0.27.0 or compatible.
+- kubectl compatible with Kubernetes 1.32.
+- At least 8 CPU cores, 16 GB of available RAM, and 25 GB of free disk space.
+- Internet access during the first deployment to download images and the
+  Astronomy Shop chart.
 
-No se requiere una instalación local de Helm ni Grafana.
+A host installation of Helm or Grafana is not required.
 
-Compruebe las herramientas:
+Check the tools:
 
-```bash
+~~~bash
 docker version
 docker compose version
 kind version
 kubectl version --client
-```
+~~~
 
-Todos los comandos siguientes se ejecutan desde la raíz del repositorio:
+Run all following commands from the repository root:
 
-```bash
+~~~bash
 cd ~/Dev/university/project_final/AIOpsLab
-```
+~~~
 
-## 2. Configurar AIOpsLab
+## 2. Configure AIOpsLab
 
-Si `aiopslab/config.yml` no existe, créelo a partir del ejemplo:
+If <code>aiopslab/config.yml</code> does not exist, create it from the example:
 
-```bash
+~~~bash
 cp aiopslab/config.yml.example aiopslab/config.yml
-```
+~~~
 
-Para el entorno local, los valores relevantes son:
+Relevant local values:
 
-```yaml
+~~~yaml
 k8s_host: kind
-k8s_user: <usuario-local>
+k8s_user: <local-user>
 ssh_key_path: ~/.ssh/id_rsa
 data_dir: data
 qualitative_eval: false
 print_session: false
-```
+~~~
 
-Este archivo es local y está excluido de Git.
+This file is local and excluded from Git.
 
-## 3. Crear o reutilizar el clúster kind
+## 3. Create or reuse the kind cluster
 
-Compruebe primero si existe el clúster:
+Check whether the cluster already exists:
 
-```bash
+~~~bash
 kind get clusters
-```
+~~~
 
-Si aparece `kind`, no lo vuelva a crear. Seleccione su contexto y compruebe los
-nodos:
+If <code>kind</code> appears, do not create it again. Select its context and
+inspect the nodes:
 
-```bash
+~~~bash
 kubectl config use-context kind-kind
 kubectl get nodes
-```
+~~~
 
-Si no existe, créelo con la configuración correspondiente a la arquitectura:
+If it does not exist, use the configuration matching the host architecture:
 
-```bash
+~~~bash
 # x86-64
 kind create cluster --name kind --config kind/kind-config-x86.yaml
 
-# ARM64, use este comando en lugar del anterior
+# ARM64: use this command instead
 # kind create cluster --name kind --config kind/kind-config-arm.yaml
-```
+~~~
 
-Espere hasta que los dos nodos estén disponibles:
+Wait until both nodes are ready:
 
-```bash
+~~~bash
 kubectl wait --for=condition=Ready node --all --timeout=180s
 kubectl get nodes -o wide
-```
+~~~
 
-## 4. Desplegar Prometheus de infraestructura
+## 4. Deploy infrastructure Prometheus
 
-El chart incluido en AIOpsLab se instala con almacenamiento efímero. Además,
-se reemplaza el mirror original de `kube-state-metrics` por el registro oficial
-de Kubernetes.
+The AIOpsLab chart is installed with ephemeral storage. The original
+<code>kube-state-metrics</code> mirror is also replaced with the official
+Kubernetes registry.
 
-```bash
+~~~bash
 docker run --rm --network host \
   -v "$HOME/.kube:/root/.kube:ro" \
   -v "$PWD:/workspace:ro" \
@@ -122,25 +125,24 @@ docker run --rm --network host \
   --set kube-state-metrics.image.repository=kube-state-metrics/kube-state-metrics \
   --wait \
   --timeout 15m
-```
+~~~
 
-Compruebe el namespace:
+Inspect the namespace:
 
-```bash
+~~~bash
 kubectl get pods,services --namespace observe
-```
+~~~
 
-Todos los pods deben aparecer como `Running`; el servidor de Prometheus debe
-exponer el `NodePort` `32000`.
+All pods should report <code>Running</code>. The Prometheus server should expose
+NodePort <code>32000</code>.
 
-## 5. Desplegar Astronomy Shop y sus fuentes de telemetría
+## 5. Deploy Astronomy Shop and its telemetry sources
 
-El archivo
-`aiopslab/observer/grafana/astronomy-shop-values.yaml` desactiva el Grafana
-incluido en el chart, habilita Jaeger y expone los backends que consultará el
-Grafana administrado con Docker.
+<code>aiopslab/observer/grafana/astronomy-shop-values.yaml</code> disables the
+Grafana instance bundled with the chart, enables Jaeger, and exposes the
+backends queried by the Docker-managed Grafana instance.
 
-```bash
+~~~bash
 docker run --rm --network host \
   -v "$HOME/.kube:/root/.kube:ro" \
   -v "$PWD:/workspace:ro" \
@@ -153,108 +155,111 @@ docker run --rm --network host \
   --values /workspace/aiopslab/observer/grafana/astronomy-shop-values.yaml \
   --wait \
   --timeout 30m
-```
+~~~
 
-El primer despliegue puede tardar entre 15 y 30 minutos porque OpenSearch y
-los microservicios descargan varias imágenes. El comando es idempotente: si se
-interrumpe o vence el tiempo de espera, revise los pods y ejecútelo de nuevo.
-Las imágenes descargadas se reutilizarán.
+The first deployment may take 15 to 30 minutes because OpenSearch and the
+microservices download several images. The command is idempotent. If it is
+interrupted or times out, inspect the pods and run it again; downloaded images
+will be reused.
 
-Compruebe el resultado:
+Inspect the result:
 
-```bash
+~~~bash
 kubectl get pods --namespace astronomy-shop
 kubectl get services --namespace astronomy-shop
-```
+~~~
 
-Todos los pods deben quedar en estado `Running`. El generador de carga se
-mantiene activo y produce solicitudes, métricas, logs y trazas continuamente.
+All pods should eventually report <code>Running</code>. The load generator
+remains active and continuously produces requests, metrics, logs, and traces.
 
-## 6. Configurar e iniciar Grafana en Docker
+## 6. Configure and start Grafana in Docker
 
-Prepare el archivo local de credenciales una sola vez:
+Create the local credentials file once:
 
-```bash
+~~~bash
 cp deploy/grafana/.env.example deploy/grafana/.env
-```
+~~~
 
-Edite `deploy/grafana/.env` y asigne una contraseña local:
+Edit <code>deploy/grafana/.env</code> and assign a local password:
 
-```dotenv
+~~~dotenv
 GRAFANA_ADMIN_USER=admin
-GRAFANA_ADMIN_PASSWORD=<contraseña-local-segura>
+GRAFANA_ADMIN_PASSWORD=<secure-local-password>
 GRAFANA_PORT=3000
-```
+~~~
 
-No agregue este archivo al repositorio. Ya está excluido mediante `.gitignore`.
+Do not commit this file. It is already excluded by <code>.gitignore</code>.
 
-Inicie Grafana:
+Start Grafana:
 
-```bash
+~~~bash
 ./scripts/grafana.sh up
-```
+~~~
 
-El script descubre la IP de `kind-control-plane`, configura las cuatro fuentes
-de datos y conecta el contenedor `aiopslab-grafana` a la red Docker del
-clúster.
+The script discovers the <code>kind-control-plane</code> address, configures the
+data sources, and connects <code>aiopslab-grafana</code> to the cluster Docker
+network and the ETL network when available.
 
-Espere unos segundos durante la primera instalación del plugin de OpenSearch y
-valide el contenedor:
+Wait briefly while Grafana installs the pinned OpenSearch and ClickHouse
+plugins, then validate the container:
 
-```bash
+~~~bash
 ./scripts/grafana.sh status
 ./scripts/grafana.sh validate
-```
+~~~
 
-Una validación correcta muestra `database: ok` y el contenedor aparece como
-`healthy`.
+A successful validation reports <code>database: ok</code>, and the container
+appears as <code>healthy</code>.
 
-## 7. Acceso al entorno
+## 7. Access the environment
 
 - Grafana: <http://localhost:3000>
-- Dashboard: <http://localhost:3000/d/aiopslab-astronomy-shop>
+- Astronomy Shop dashboard:
+  <http://localhost:3000/d/aiopslab-astronomy-shop>
+- Multimodal ETL dashboard:
+  <http://localhost:3000/d/aiopslab-etl-multimodal>
 
-El dashboard **AIOpsLab — Astronomy Shop** incluye tasa de solicitudes,
-errores, latencia, CPU, memoria, logs recientes y acceso a trazas.
+The **AIOpsLab — Astronomy Shop** dashboard includes request rate, errors,
+latency, CPU, memory, recent logs, and trace access. The ETL dashboard queries
+ClickHouse for Gold features and signal coverage.
 
-En Linux, obtenga la IP del nodo para abrir Astronomy Shop:
+On Linux, obtain the node address used to open Astronomy Shop:
 
-```bash
+~~~bash
 KIND_NODE_IP=$(docker inspect \
   --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
   kind-control-plane)
-echo "http://${KIND_NODE_IP}:30080/"
-```
+echo "http://$KIND_NODE_IP:30080/"
+~~~
 
-Si Docker Desktop o WSL2 no permite acceder directamente a esa red, mantenga
-el siguiente comando abierto en otra terminal y use
-<http://localhost:8080>:
+If Docker Desktop or WSL2 cannot directly access that network, keep this command
+running in another terminal and use <http://localhost:8080>:
 
-```bash
+~~~bash
 kubectl port-forward \
   --namespace astronomy-shop \
   service/frontend-proxy 8080:8080
-```
+~~~
 
-### Puertos
+### Ports
 
-| Puerto | Origen | Contenido |
+| Port | Source | Content |
 |---:|---|---|
-| 3000 | Docker | Interfaz y API de Grafana |
-| 30080 | Kubernetes | Astronomy Shop y proxy de Jaeger |
-| 32000 | Kubernetes | Prometheus de infraestructura |
-| 32001 | Kubernetes | Prometheus de aplicación |
-| 32200 | Kubernetes | OpenSearch para logs |
+| 3000 | Docker | Grafana UI and API |
+| 30080 | Kubernetes | Astronomy Shop and Jaeger proxy |
+| 32000 | Kubernetes | Infrastructure Prometheus |
+| 32001 | Kubernetes | Application Prometheus |
+| 32200 | Kubernetes | OpenSearch logs |
 
-Los `NodePort` no incorporan autenticación y están destinados únicamente a un
-entorno local controlado.
+NodePorts do not include authentication and are intended only for a controlled
+local environment.
 
-## 8. Validar telemetría real
+## 8. Validate real telemetry
 
-La validación automatizada consulta las fuentes mediante la API de Grafana. Se
-ejecuta dentro de un contenedor temporal y no instala dependencias en el host:
+The integration test queries data sources through the Grafana API. It runs in a
+temporary container and does not install dependencies on the host:
 
-```bash
+~~~bash
 docker run --rm \
   --network aiopslab-observability_default \
   -v "$PWD:/workspace:ro" \
@@ -262,113 +267,111 @@ docker run --rm \
   -e AIOPSLAB_GRAFANA_INTEGRATION=true \
   -e GRAFANA_URL=http://aiopslab-grafana:3000 \
   -e GRAFANA_ADMIN_USER=admin \
-  -e GRAFANA_ADMIN_PASSWORD='<contraseña-configurada>' \
+  -e GRAFANA_ADMIN_PASSWORD='<configured-password>' \
   python:3.12-slim \
   sh -c 'pip install --quiet pytest requests && pytest -p no:cacheprovider tests/integration/test_grafana_observability.py -q'
-```
+~~~
 
-El resultado esperado es `4 passed`. Esto comprueba:
+The expected result is <code>4 passed</code>. This verifies:
 
-1. salud de Grafana y aprovisionamiento de las fuentes;
-2. consulta de métricas de aplicación;
-3. existencia de índices de logs `otel-logs-*`;
-4. existencia de servicios trazados en Jaeger.
+1. Grafana health and data-source provisioning;
+2. application metric queries;
+3. the existence of <code>otel-logs-*</code> indices;
+4. the existence of traced services in Jaeger.
 
-## 9. Apagar y volver a levantar
+## 9. Stop and restart
 
-### Opción A: detener solamente Grafana
+### Option A: stop only Grafana
 
-```bash
+~~~bash
 ./scripts/grafana.sh down
-```
+~~~
 
-El volumen `aiopslab-grafana-data` se conserva. Astronomy Shop y la recolección
-de telemetría continúan ejecutándose en Kubernetes.
+The <code>aiopslab-grafana-data</code> volume is retained. Astronomy Shop and
+telemetry collection continue running in Kubernetes.
 
-Para volver a iniciar Grafana:
+Restart Grafana:
 
-```bash
+~~~bash
 ./scripts/grafana.sh up
 ./scripts/grafana.sh validate
-```
+~~~
 
-### Opción B: pausar todo conservando el entorno
+### Option B: pause everything while retaining the environment
 
-Detenga primero Grafana y luego los nodos de kind:
+Stop Grafana first, then stop the kind nodes:
 
-```bash
+~~~bash
 ./scripts/grafana.sh down
 docker stop kind-worker kind-control-plane
-```
+~~~
 
-Esto libera CPU y memoria sin eliminar el clúster ni el volumen de Grafana.
+This releases CPU and memory without deleting the cluster or Grafana volume.
 
-Para reanudar:
+Resume the environment:
 
-```bash
+~~~bash
 docker start kind-control-plane kind-worker
 kubectl wait --for=condition=Ready node --all --timeout=180s
 ./scripts/grafana.sh up
 ./scripts/grafana.sh validate
-```
+~~~
 
-Finalmente, compruebe los workloads:
+Finally, inspect the workloads:
 
-```bash
+~~~bash
 kubectl get pods --namespace observe
 kubectl get pods --namespace astronomy-shop
-```
+~~~
 
-### Opción C: eliminar completamente el entorno
+### Option C: remove the complete environment
 
-Esta operación elimina el clúster y toda la telemetría almacenada en él:
+The following operation deletes the cluster and all telemetry stored in it:
 
-```bash
+~~~bash
 ./scripts/grafana.sh down
 kind delete cluster --name kind
-```
+~~~
 
-El volumen de Grafana se conserva deliberadamente. Si también desea eliminar
-dashboards editados, usuarios y configuración persistida, ejecute:
+The Grafana volume is deliberately retained. To also delete edited dashboards,
+users, and persistent Grafana configuration, run:
 
-```bash
+~~~bash
 docker volume rm aiopslab-grafana-data
-```
+~~~
 
-La eliminación del volumen es irreversible. No es necesaria para volver a
-desplegar el clúster.
+Volume deletion is irreversible and is not required to redeploy the cluster.
 
-## 10. Actualizar o reparar un despliegue
+## 10. Update or repair a deployment
 
-Los dos comandos `helm upgrade --install` de esta guía pueden ejecutarse de
-nuevo sin eliminar el entorno. Úselos si cambian los valores del chart o si un
-primer despliegue fue interrumpido.
+The two <code>helm upgrade --install</code> commands can be safely repeated
+without deleting the environment. Use them after chart-value changes or when a
+first deployment was interrupted.
 
-Comandos útiles de diagnóstico:
+Useful diagnostics:
 
-```bash
+~~~bash
 kubectl get events --namespace astronomy-shop --sort-by=.lastTimestamp
 kubectl describe pod --namespace astronomy-shop <pod>
 kubectl logs --namespace astronomy-shop <pod> --all-containers
 docker logs --tail 200 aiopslab-grafana
 ./scripts/grafana.sh status
-```
+~~~
 
-Si una fuente deja de responder después de reiniciar Docker, recree únicamente
-el contenedor de Grafana para que descubra de nuevo la IP del nodo:
+If a data source stops responding after Docker restarts, recreate only the
+Grafana container so it discovers the node address again:
 
-```bash
+~~~bash
 ./scripts/grafana.sh down
 ./scripts/grafana.sh up
 ./scripts/grafana.sh validate
-```
+~~~
 
-## Persistencia y alcance
+## Persistence and scope
 
-- El volumen Docker de Grafana es persistente hasta que se elimine
-  explícitamente.
-- Los Prometheus y OpenSearch de este perfil usan almacenamiento efímero. La
-  telemetría se conserva al detener y volver a iniciar los contenedores kind,
-  pero se pierde al borrar el clúster y puede perderse si se recrean sus pods.
-- La configuración prioriza un entorno experimental reproducible, no una
-  instalación productiva ni expuesta a redes no confiables.
+- The Grafana Docker volume remains persistent until explicitly deleted.
+- Prometheus and OpenSearch use ephemeral storage in this profile. Telemetry
+  survives stopping and restarting the kind containers, but is lost when the
+  cluster is deleted and may be lost when their pods are recreated.
+- The configuration prioritizes a reproducible experimental environment rather
+  than a production deployment or exposure to untrusted networks.
