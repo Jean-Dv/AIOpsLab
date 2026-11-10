@@ -1,0 +1,60 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "aiopslab-clickhouse"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [{"format": 1, "queryType": "sql", "rawSql": "SELECT window_start AS time, service_name, avg(request_rate) AS request_rate FROM aiopslab.gold_service_window_v2_latest WHERE $__timeFilter(window_start) AND request_rate IS NOT NULL GROUP BY time, service_name ORDER BY time", "refId": "A"}],
+      "title": "Request rate by service (Gold)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "aiopslab-clickhouse"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [{"format": 1, "queryType": "sql", "rawSql": "SELECT window_start AS time, service_name, avg(latency_p95_ms) AS latency_p95_ms FROM aiopslab.gold_service_window_v2_latest WHERE $__timeFilter(window_start) AND latency_p95_ms IS NOT NULL GROUP BY time, service_name ORDER BY time", "refId": "A"}],
+      "title": "p95 latency by service (Gold)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "aiopslab-clickhouse"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "targets": [{"format": 1, "queryType": "sql", "rawSql": "SELECT minute AS time, avg(metric_coverage) AS metrics, avg(log_coverage) AS logs, avg(trace_coverage) AS traces FROM aiopslab.signal_coverage_v2 WHERE $__timeFilter(minute) GROUP BY time ORDER BY time", "refId": "A"}],
+      "title": "Signal coverage by window",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "grafana-clickhouse-datasource", "uid": "aiopslab-clickhouse"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4,
+      "options": {"cellHeight": "sm", "showHeader": true},
+      "targets": [{"format": 0, "queryType": "sql", "rawSql": "SELECT g.window_start, g.run_id, g.service_name, r.condition, r.fault_type, g.log_error_count, g.error_span_count, g.late_event_count, g.duplicate_event_count FROM aiopslab.gold_service_window_v2_latest AS g LEFT JOIN aiopslab.evaluation_reference_v1 AS r ON g.run_id = r.run_id AND g.window_start >= r.window_start AND g.window_start < coalesce(r.window_end, now64(3)) WHERE $__timeFilter(g.window_start) ORDER BY g.window_start DESC LIMIT 200", "refId": "A"}],
+      "title": "Windows and evaluation reference data",
+      "type": "table"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 42,
+  "tags": ["aiopslab", "etl", "multimodal", "clickhouse"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "AIOpsLab — Multimodal ETL",
+  "uid": "aiopslab-etl-multimodal",
+  "version": 1
+}

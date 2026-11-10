@@ -30,3 +30,82 @@ opensearch:
   service:
     type: NodePort
     nodePort: 32200
+
+# Secondary copy of all three signals to the dedicated ETL Kafka broker. The
+# selectorless aiopslab-etl-kafka service is created by scripts/etl.sh and points
+# to the Kafka container's external listener. Existing exporters are preserved:
+# this route does not replace Prometheus, OpenSearch, or Jaeger.
+opentelemetry-collector:
+  resources:
+    limits:
+      memory: 700Mi
+  config:
+    receivers:
+      # Kind exposes the kubelet through its node IP, while its local
+      # certificate does not include that IP as a SAN. This exception is
+      # intentionally limited to the reproducible local environment.
+      kubeletstats:
+        insecure_skip_verify: true
+    exporters:
+      kafka/metrics:
+        brokers:
+          - aiopslab-etl-kafka:29092
+        metrics:
+          topic: otlp.metrics.v1
+          encoding: otlp_proto
+        producer:
+          max_message_bytes: 20971520
+          required_acks: 1
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 0s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 2048
+      kafka/logs:
+        brokers:
+          - aiopslab-etl-kafka:29092
+        logs:
+          topic: otlp.logs.v1
+          encoding: otlp_proto
+        producer:
+          max_message_bytes: 20971520
+          required_acks: 1
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 0s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 2048
+      kafka/traces:
+        brokers:
+          - aiopslab-etl-kafka:29092
+        traces:
+          topic: otlp.traces.v1
+          encoding: otlp_proto
+        producer:
+          max_message_bytes: 20971520
+          required_acks: 1
+        retry_on_failure:
+          enabled: true
+          initial_interval: 1s
+          max_interval: 30s
+          max_elapsed_time: 0s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 2048
+    service:
+      pipelines:
+        traces:
+          exporters: [otlp_grpc/jaeger, debug, span_metrics, kafka/traces]
+        metrics:
+          exporters: [otlp_http/prometheus, debug, kafka/metrics]
+        logs:
+          exporters: [opensearch, debug, kafka/logs]

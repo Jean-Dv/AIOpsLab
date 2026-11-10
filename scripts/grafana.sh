@@ -30,6 +30,12 @@ connect_kind_network() {
   fi
 }
 
+connect_etl_network() {
+  if docker network inspect aiopslab-etl_default >/dev/null 2>&1; then
+    docker network connect aiopslab-etl_default aiopslab-grafana 2>/dev/null || true
+  fi
+}
+
 read_env_value() {
   local key="$1"
   local env_file="${GRAFANA_DIR}/.env"
@@ -90,6 +96,9 @@ compose_control() {
     AIOPSLAB_INFRA_PROMETHEUS_URL="${AIOPSLAB_INFRA_PROMETHEUS_URL:-http://127.0.0.1}" \
     AIOPSLAB_OPENSEARCH_URL="${AIOPSLAB_OPENSEARCH_URL:-http://127.0.0.1}" \
     AIOPSLAB_JAEGER_URL="${AIOPSLAB_JAEGER_URL:-http://127.0.0.1}" \
+    AIOPSLAB_CLICKHOUSE_HOST="${AIOPSLAB_CLICKHOUSE_HOST:-clickhouse}" \
+    AIOPSLAB_CLICKHOUSE_USER="${AIOPSLAB_CLICKHOUSE_USER:-aiopslab}" \
+    AIOPSLAB_CLICKHOUSE_PASSWORD="${AIOPSLAB_CLICKHOUSE_PASSWORD:-aiopslab-local}" \
     docker compose --project-directory "${GRAFANA_DIR}" -f "${COMPOSE_FILE}" "$@"
 }
 
@@ -97,8 +106,11 @@ command="${1:-}"
 case "${command}" in
   up)
     configure_backend_urls
-    compose up -d
+    # Recreate to refresh references to the kind/ETL networks, whose Docker IDs
+    # can change after a full ETL redeploy while the Grafana volume is retained.
+    compose up -d --force-recreate
     connect_kind_network
+    connect_etl_network
     ;;
   down)
     compose_control down

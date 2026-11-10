@@ -60,3 +60,22 @@ datasources:
         filterBySpanID: true
         customQuery: true
         query: 'traceId:"$${__trace.traceId}" AND spanId:"$${__span.spanId}"'
+
+  - name: AIOpsLab multimodal features
+    uid: aiopslab-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      host: $AIOPSLAB_CLICKHOUSE_HOST
+      port: 8123
+      protocol: http
+      username: $AIOPSLAB_CLICKHOUSE_USER
+      defaultDatabase: aiopslab
+      defaultTable: gold_multimodal_latest
+      # The ClickHouse plugin expects duration settings as strings. YAML
+      # numbers are decoded as float64 and make plugin 4.8.x fail health checks.
+      dialTimeout: "10"
+      queryTimeout: "60"
+    secureJsonData:
+      password: $AIOPSLAB_CLICKHOUSE_PASSWORD

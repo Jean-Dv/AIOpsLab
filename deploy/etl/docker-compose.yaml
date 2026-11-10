@@ -1,0 +1,266 @@
+name: aiopslab-etl
+
+x-flink-environment: &flink-environment
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/aiopslab
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-aiopslab}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-aiopslab-local}
+  CLICKHOUSE_BATCH_SIZE: ${CLICKHOUSE_BATCH_SIZE:-20}
+  MINIO_ENDPOINT: http://minio:9000
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-aiopslab}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-aiopslab-local-secret}
+  AIOPSLAB_RUN_ID: ${AIOPSLAB_RUN_ID:-unassigned}
+  AIOPSLAB_SCENARIO_ID: ${AIOPSLAB_SCENARIO_ID:-unassigned}
+  FLINK_PROPERTIES: |
+    jobmanager.rpc.address: jobmanager
+    rest.address: jobmanager
+    taskmanager.numberOfTaskSlots: 4
+    taskmanager.memory.process.size: 4096m
+    taskmanager.memory.managed.fraction: 0.10
+    jobmanager.memory.process.size: 2048m
+    parallelism.default: 2
+    execution.checkpointing.interval: 60s
+    execution.checkpointing.mode: EXACTLY_ONCE
+    execution.checkpointing.min-pause: 30s
+    execution.checkpointing.timeout: 5m
+    execution.checkpointing.max-concurrent-checkpoints: 1
+    execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+    state.backend.type: rocksdb
+    state.backend.incremental: true
+    state.checkpoints.dir: s3://aiopslab-checkpoints/checkpoints
+    state.savepoints.dir: s3://aiopslab-checkpoints/savepoints
+    s3.endpoint: http://minio:9000
+    s3.path.style.access: true
+    s3.access-key: ${MINIO_ROOT_USER:-aiopslab}
+    s3.secret-key: ${MINIO_ROOT_PASSWORD:-aiopslab-local-secret}
+    rest.flamegraph.enabled: false
+
+services:
+  kafka:
+    image: apache/kafka:${KAFKA_VERSION:-4.2.0}
+    container_name: aiopslab-etl-kafka
+    restart: unless-stopped
+    ports:
+      - "${AIOPSLAB_KAFKA_EXTERNAL_HOST:-127.0.0.1}:29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:9092,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://${AIOPSLAB_KAFKA_EXTERNAL_HOST:-127.0.0.1}:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 72
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+      KAFKA_MESSAGE_MAX_BYTES: 20971520
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 20971520
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:${KAFKA_VERSION:-4.2.0}
+    container_name: aiopslab-etl-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-euc"]
+    command:
+      - |
+        for topic in otlp.metrics.v1 otlp.logs.v1 otlp.traces.v1 experiment.control.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$${topic}" --partitions 3 \
+            --replication-factor 1 \
+            --config retention.ms=259200000 \
+            --config max.message.bytes=20971520
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-25.3.8.23-alpine}
+    container_name: aiopslab-etl-clickhouse
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9009:9000"
+    environment:
+      CLICKHOUSE_DB: aiopslab
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-aiopslab}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-aiopslab-local}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user=$${CLICKHOUSE_USER} --password=$${CLICKHOUSE_PASSWORD} --query 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+
+  clickhouse-migrate:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION:-25.3.8.23-alpine}
+    container_name: aiopslab-etl-clickhouse-migrate
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        for migration in /migrations/*.sql; do
+          echo "Applying $${migration}"
+          clickhouse-client --host clickhouse \
+            --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" \
+            --multiquery < "$${migration}"
+        done
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-aiopslab}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-aiopslab-local}
+    volumes:
+      - ./clickhouse/init:/migrations:ro
+
+  minio:
+    image: bitnamilegacy/minio:${MINIO_VERSION:-2025.4.22-debian-12-r1}
+    container_name: aiopslab-etl-minio
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aiopslab}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aiopslab-local-secret}
+    volumes:
+      - minio-data:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 10s
+
+  minio-init:
+    image: bitnamilegacy/minio-client:${MC_VERSION:-2025.4.16-debian-12-r0}
+    container_name: aiopslab-etl-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        attempt=0
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          attempt=$$((attempt + 1))
+          if [ "$${attempt}" -ge 30 ]; then
+            echo "MinIO did not become ready after $${attempt} attempts." >&2
+            exit 1
+          fi
+          sleep 2
+        done
+        mc mb --ignore-existing local/aiopslab-bronze
+        mc mb --ignore-existing local/aiopslab-silver
+        mc mb --ignore-existing local/aiopslab-bronze-v2
+        mc mb --ignore-existing local/aiopslab-silver-v2
+        mc mb --ignore-existing local/aiopslab-checkpoints
+        mc version enable local/aiopslab-bronze
+        mc version enable local/aiopslab-silver
+        mc version enable local/aiopslab-bronze-v2
+        mc version enable local/aiopslab-silver-v2
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aiopslab}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aiopslab-local-secret}
+
+  jobmanager:
+    build:
+      context: ./flink-job
+      args:
+        FLINK_VERSION: ${FLINK_VERSION:-1.20.1-scala_2.12-java17}
+    image: aiopslab/telemetry-etl:2.0.0
+    container_name: aiopslab-etl-jobmanager
+    restart: unless-stopped
+    command: jobmanager
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment: *flink-environment
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+      clickhouse-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8081'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 15s
+
+  taskmanager:
+    image: aiopslab/telemetry-etl:2.0.0
+    container_name: aiopslab-etl-taskmanager
+    restart: unless-stopped
+    command: taskmanager
+    environment: *flink-environment
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+
+  submit-job:
+    image: aiopslab/telemetry-etl:2.0.0
+    container_name: aiopslab-etl-submit
+    command:
+      - /bin/bash
+      - -euc
+      - |
+        existing="$$(flink list -r 2>/dev/null | grep -c 'AIOpsLab multimodal telemetry ETL' || true)"
+        if [[ "$${existing}" -eq 0 ]]; then
+          flink run -d -c org.aiopslab.etl.TelemetryEtlJob /opt/flink/usrlib/aiopslab-telemetry-etl.jar
+        else
+          echo 'The AIOpsLab ETL job is already running.'
+        fi
+    environment: *flink-environment
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      taskmanager:
+        condition: service_started
+
+  profiler:
+    profiles: ["tools"]
+    build:
+      context: ./profiling
+    image: aiopslab/telemetry-profiler:1.0.0
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-aiopslab}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-aiopslab-local}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aiopslab}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aiopslab-local-secret}
+      PROFILE_RUN_ID: ${PROFILE_RUN_ID:-}
+    volumes:
+      - ./reports:/reports
+    depends_on:
+      minio:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  kafka-data:
+    name: aiopslab-etl-kafka-data
+  clickhouse-data:
+    name: aiopslab-etl-clickhouse-data
+  minio-data:
+    name: aiopslab-etl-minio-data

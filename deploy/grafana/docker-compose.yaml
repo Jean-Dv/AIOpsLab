@@ -14,12 +14,15 @@ services:
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deploy/grafana/.env}"
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_PLUGINS_PREINSTALL_SYNC: "grafana-opensearch-datasource@2.34.6"
+      GF_PLUGINS_PREINSTALL_SYNC: "grafana-opensearch-datasource@2.34.6,grafana-clickhouse-datasource@4.8.2"
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       AIOPSLAB_APP_PROMETHEUS_URL: "${AIOPSLAB_APP_PROMETHEUS_URL}"
       AIOPSLAB_INFRA_PROMETHEUS_URL: "${AIOPSLAB_INFRA_PROMETHEUS_URL}"
       AIOPSLAB_OPENSEARCH_URL: "${AIOPSLAB_OPENSEARCH_URL}"
       AIOPSLAB_JAEGER_URL: "${AIOPSLAB_JAEGER_URL}"
+      AIOPSLAB_CLICKHOUSE_HOST: "${AIOPSLAB_CLICKHOUSE_HOST:-clickhouse}"
+      AIOPSLAB_CLICKHOUSE_USER: "${AIOPSLAB_CLICKHOUSE_USER:-aiopslab}"
+      AIOPSLAB_CLICKHOUSE_PASSWORD: "${AIOPSLAB_CLICKHOUSE_PASSWORD:-aiopslab-local}"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./provisioning/datasources:/etc/grafana/provisioning/datasources:ro

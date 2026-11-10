@@ -178,6 +178,8 @@ data
 taskweaver_proj
 trace_output/
 metrics_output/
+deploy/etl/.env
+deploy/etl/reports/
 
 # Ignore telemetry data directories
 aiopslab/observer/telemetry_data_*/
