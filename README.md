@@ -82,6 +82,11 @@ kind create cluster --config kind/kind-config-x86.yaml
 kind create cluster --config kind/kind-config-arm.yaml
 ```
 
+Cuando termine de trabajar, consulte la guía para
+[detener, reanudar o eliminar el entorno de Kubernetes](docs/detener_kubernetes.md).
+Incluye opciones para conservar el clúster local o apagar solamente una
+aplicación.
+
 If you're running into issues, consider building a Docker image for your machine by following this [README](kind/README.md#deployment-steps). Please also open an issue.
 
 ### [Tips]

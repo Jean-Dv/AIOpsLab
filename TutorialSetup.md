@@ -188,7 +188,12 @@ aiopslab>
 ```
 
 ### Cleaning up
-You can destroy the cluster with the following command:
+To pause the local cluster without losing its state, stop only an application,
+or understand which data each option preserves, follow the
+[Kubernetes shutdown guide](docs/detener_kubernetes.md).
+
+If you want to destroy the complete local cluster, run:
+
 ```bash
-kind delete cluster
+kind delete cluster --name kind
 ```
