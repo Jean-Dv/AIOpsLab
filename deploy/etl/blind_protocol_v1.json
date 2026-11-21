@@ -1,0 +1,61 @@
+{
+  "protocol_version": "blind_protocol_v1",
+  "scenario_id": "astronomy-blind-ad-failure-v1",
+  "created_at": "2026-11-21",
+  "application_version": "opentelemetry-demo-0.42.6",
+  "configuration": "local-kind-etl-v1",
+  "load_profile": "astronomy-shop-default-load-generator",
+  "fault": "adFailure",
+  "affected_component": "ad",
+  "repetitions_per_cell": 3,
+  "warmup_seconds": 300,
+  "observation_horizon_seconds": 3000,
+  "fault_duration_seconds": 600,
+  "drain_seconds": 45,
+  "maximum_consumer_lag": 1000,
+  "cells": [
+    {
+      "cell_id": "control_no_fault",
+      "control": true,
+      "normal_before_fault_seconds": 3000,
+      "fault_seconds": 0,
+      "recovery_seconds": 0
+    },
+    {
+      "cell_id": "fault_early",
+      "control": false,
+      "normal_before_fault_seconds": 600,
+      "fault_seconds": 600,
+      "recovery_seconds": 1800
+    },
+    {
+      "cell_id": "fault_middle",
+      "control": false,
+      "normal_before_fault_seconds": 1200,
+      "fault_seconds": 600,
+      "recovery_seconds": 1200
+    },
+    {
+      "cell_id": "fault_late",
+      "control": false,
+      "normal_before_fault_seconds": 1800,
+      "fault_seconds": 600,
+      "recovery_seconds": 600
+    }
+  ],
+  "blinding": {
+    "allocation": "Cryptographically shuffled opaque run codes generated at batch preparation.",
+    "public_file": "Contains run code, order, run_id and execution status, but not the allocated cell.",
+    "sealed_file": "Contains the run-code-to-cell mapping, is mode 0600 and is committed with SHA-256 before execution.",
+    "reveal_rule": "The allocation may be revealed only after a predictions file is frozen and hashed."
+  },
+  "acceptance": {
+    "equal_duration": true,
+    "minimum_normal_reference_seconds": 600,
+    "minimum_post_fault_seconds": 600,
+    "complete_cells_required": 4,
+    "complete_runs_required": 12,
+    "no_backlog_override": true,
+    "duration_scale": 1.0
+  }
+}

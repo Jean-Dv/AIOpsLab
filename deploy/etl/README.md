@@ -134,6 +134,37 @@ python3 deploy/etl/experiment.py \
   --stationary-seconds 600
 ```
 
+The confirmatory blind protocol uses twelve equal-duration runs across one
+no-fault control and early, middle, and late fault cells. The modeler receives
+only opaque run codes until predictions have been frozen and hashed:
+
+```bash
+python3 deploy/etl/blind_batch.py prepare \
+  --protocol deploy/etl/blind_protocol_v1.json
+python3 deploy/etl/blind_batch.py verify --batch-dir <batch-dir>
+python3 deploy/etl/blind_batch.py run --batch-dir <batch-dir>
+python3 deploy/etl/blind_batch.py reveal \
+  --batch-dir <batch-dir> --predictions <predictions-file>
+```
+
+Preparation does not start services or collect data. The allocation is a
+SHA-256-committed, mode-`0600` procedural seal rather than encryption. Keep the
+sealed mapping, per-run phase timelines, and evaluation-reference tables away
+from the modeler until the reveal step. See
+[`GUIA_EJECUCION.md`](GUIA_EJECUCION.md#51-ejecutar-el-lote-ciego-que-desacopla-tiempo-y-condición)
+for roles, safeguards, recovery, and the estimated duration.
+
+Preparation also loads the frozen confirmatory manifest from the sibling
+research repository by default, copies it byte-for-byte into the batch, and
+adds its SHA-256 to the public and commitment files. Use
+`--confirmatory-manifest <path>` only when the repositories are not siblings.
+
+Do not prepare or run the twelve-run batch yet. The next mandatory step is to
+implement and test the blind score generator against the frozen confirmatory
+manifest, including all ten variants and the hashed prediction-manifest
+contract. Batch preparation is authorized only after that generator passes its
+tests without reading the sealed allocation or evaluation labels.
+
 After a run, generate the field inventory and quantitative profile (optionally
 restricted to one run):
 

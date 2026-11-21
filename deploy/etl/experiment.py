@@ -141,6 +141,49 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def blind_metadata(args: argparse.Namespace) -> dict[str, str] | None:
+    """Return complete blind-batch metadata and reject partial declarations."""
+    values = {
+        "batch_id": getattr(args, "blind_batch_id", None),
+        "run_code": getattr(args, "blind_run_code", None),
+        "allocation_commitment_sha256": getattr(
+            args, "allocation_commitment", None,
+        ),
+    }
+    supplied = [bool(value) for value in values.values()]
+    if any(supplied) and not all(supplied):
+        raise ValueError(
+            "Blind execution requires --blind-batch-id, --blind-run-code, "
+            "and --allocation-commitment together"
+        )
+    return values if all(supplied) else None
+
+
+def execution_durations(args: argparse.Namespace) -> tuple[dict[str, float], bool, bool]:
+    """Resolve phase durations and mutually exclusive execution modes."""
+    stationary = getattr(args, "stationary_seconds", None) is not None
+    control = bool(getattr(args, "control_cycle", False))
+    if stationary and control:
+        raise ValueError("--stationary-seconds and --control-cycle are mutually exclusive")
+    if stationary and args.stationary_seconds <= 0:
+        raise ValueError("--stationary-seconds must be greater than zero")
+    if control:
+        durations = {
+            "warmup": args.warmup * args.duration_scale,
+            "normal": args.normal * args.duration_scale,
+        }
+    elif stationary:
+        durations = {"normal": args.stationary_seconds}
+    else:
+        durations = {
+            "warmup": args.warmup * args.duration_scale,
+            "normal": args.normal * args.duration_scale,
+            "fault": args.fault_duration * args.duration_scale,
+            "recovery": args.recovery * args.duration_scale,
+        }
+    return durations, stationary, control
+
+
 def flink_snapshot() -> dict[str, object]:
     result: dict[str, object] = {}
     for endpoint in ("jobs/overview", "jobmanager/config"):
@@ -758,12 +801,13 @@ def phase(run_id: str, scenario_id: str, condition: str, duration: float,
     return event
 
 
-def execute(args: argparse.Namespace) -> None:
+def execute(args: argparse.Namespace) -> dict[str, object]:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     document = flag_document()
     fault = select_fault(document, args.fault)
     original_variant = require_fault_baseline(document, fault)
+    blind = blind_metadata(args)
     report: dict[str, object] = {
         "scenario_id": args.scenario,
         "fault_type": fault,
@@ -771,19 +815,9 @@ def execute(args: argparse.Namespace) -> None:
         "load_profile": args.load_profile,
         "runs": [],
     }
-    stationary = args.stationary_seconds is not None
-    if stationary and args.stationary_seconds <= 0:
-        raise ValueError("--stationary-seconds must be greater than zero")
-    durations = (
-        {"normal": args.stationary_seconds}
-        if stationary
-        else {
-            "warmup": args.warmup * args.duration_scale,
-            "normal": args.normal * args.duration_scale,
-            "fault": args.fault_duration * args.duration_scale,
-            "recovery": args.recovery * args.duration_scale,
-        }
-    )
+    if blind:
+        report["blind_evaluation"] = blind
+    durations, stationary, control = execution_durations(args)
 
     for repetition in range(1, args.repetitions + 1):
         # Repeat the complete guard immediately before every repetition. A
@@ -819,16 +853,34 @@ def execute(args: argparse.Namespace) -> None:
             and args.repetitions == 3
             and not args.allow_backlog
             and not stationary
+            and not control
+        )
+        blind_candidate = (
+            blind is not None
+            and args.duration_scale == 1.0
+            and args.repetitions == 1
+            and not args.allow_backlog
+            and not stationary
+        )
+        classification = (
+            "nominal" if nominal else
+            "blind_confirmatory_candidate" if blind_candidate else
+            "diagnostic"
+        )
+        protocol = (
+            "stationary" if stationary else
+            "control-cycle" if control else
+            "fault-cycle"
         )
         manifest: dict[str, object] = {
             "run_id": run_id,
             "scenario_id": args.scenario,
             "repetition": repetition,
             "status": status,
-            "classification": "nominal" if nominal else "diagnostic",
+            "classification": classification,
             "application_version": args.application_version,
             "etl_contract": "gold_service_window_v2.2",
-            "protocol": "stationary" if stationary else "fault-cycle",
+            "protocol": protocol,
             "configuration": args.configuration,
             "load_profile": args.load_profile,
             "fault_requested": args.fault,
@@ -841,6 +893,8 @@ def execute(args: argparse.Namespace) -> None:
             "host_disk_before": disk_before,
             "control_plane_before": control_plane_before,
         }
+        if blind:
+            manifest["blind_evaluation"] = blind
         initialize_package(run_dir, manifest, preflight_report)
         clickhouse_insert("experiment_runs", {
             "run_id": run_id,
@@ -858,6 +912,13 @@ def execute(args: argparse.Namespace) -> None:
         fault_change_attempted = False
         try:
             if stationary:
+                append_phase(
+                    phases, run_id, args.scenario, "normal", durations["normal"],
+                )
+            elif control:
+                append_phase(
+                    phases, run_id, args.scenario, "warmup", durations["warmup"],
+                )
                 append_phase(
                     phases, run_id, args.scenario, "normal", durations["normal"],
                 )
@@ -883,7 +944,9 @@ def execute(args: argparse.Namespace) -> None:
             manifest["control_plane_after"] = require_unchanged_control_plane(
                 control_plane_before
             )
-            status = "complete" if nominal else "diagnostic_complete"
+            status = (
+                "complete" if nominal or blind_candidate else "diagnostic_complete"
+            )
         except BaseException as run_error:
             status = "failed"
             manifest["run_error"] = {
@@ -972,6 +1035,7 @@ def execute(args: argparse.Namespace) -> None:
                     ) from package_error
             print(f"Partial report: {target}", flush=True)
             print(f"Run package: {run_dir}", flush=True)
+    return report
 
 
 def parser() -> argparse.ArgumentParser:
@@ -989,6 +1053,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--stationary-seconds", type=float,
         help="Collect only a normal stationary phase; always classifies the run as diagnostic.",
+    )
+    result.add_argument(
+        "--control-cycle", action="store_true",
+        help="Collect warm-up and normal phases without changing the fault flag.",
+    )
+    result.add_argument("--blind-batch-id")
+    result.add_argument("--blind-run-code")
+    result.add_argument(
+        "--allocation-commitment",
+        help="SHA-256 commitment of the sealed blind allocation.",
     )
     result.add_argument(
         "--duration-scale", type=float, default=1.0,

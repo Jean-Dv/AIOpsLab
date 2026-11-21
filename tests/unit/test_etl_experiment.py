@@ -13,6 +13,43 @@ SPEC.loader.exec_module(experiment)
 
 
 class ExperimentTest(unittest.TestCase):
+    def test_blind_metadata_rejects_partial_declaration(self):
+        args = SimpleNamespace(
+            blind_batch_id="batch-1", blind_run_code=None,
+            allocation_commitment=None,
+        )
+        with self.assertRaisesRegex(ValueError, "requires"):
+            experiment.blind_metadata(args)
+
+    def test_blind_metadata_accepts_complete_declaration(self):
+        args = SimpleNamespace(
+            blind_batch_id="batch-1", blind_run_code="BR-001",
+            allocation_commitment="abc123",
+        )
+        self.assertEqual({
+            "batch_id": "batch-1",
+            "run_code": "BR-001",
+            "allocation_commitment_sha256": "abc123",
+        }, experiment.blind_metadata(args))
+
+    def test_control_cycle_has_only_warmup_and_normal_durations(self):
+        args = SimpleNamespace(
+            stationary_seconds=None, control_cycle=True, warmup=300,
+            normal=3000, duration_scale=1.0,
+        )
+        durations, stationary, control = experiment.execution_durations(args)
+        self.assertEqual({"warmup": 300.0, "normal": 3000.0}, durations)
+        self.assertFalse(stationary)
+        self.assertTrue(control)
+
+    def test_stationary_and_control_modes_are_mutually_exclusive(self):
+        args = SimpleNamespace(
+            stationary_seconds=60, control_cycle=True, warmup=300,
+            normal=3000, duration_scale=1.0,
+        )
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            experiment.execution_durations(args)
+
     def test_select_fault_accepts_exact_name(self):
         document = {"flags": {"adFailure": {"defaultVariant": "off"}}}
         self.assertEqual("adFailure", experiment.select_fault(document, "adFailure"))

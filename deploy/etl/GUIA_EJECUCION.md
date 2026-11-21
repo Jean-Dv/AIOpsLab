@@ -185,6 +185,91 @@ python3 deploy/etl/experiment.py \
 Una sola repetición queda clasificada como diagnóstica. No renombre su estado
 para incorporarla a la cohorte nominal.
 
+## 5.1. Ejecutar el lote ciego que desacopla tiempo y condición
+
+Este lote es distinto de las tres repeticiones nominales anteriores. Su
+propósito es evaluar los algoritmos sobre datos aún no inspeccionados y evitar
+que la posición temporal de `adFailure` sea siempre la misma. Mantiene un
+horizonte de observación de 50 minutos después de 5 minutos de calentamiento
+en cuatro celdas: control sin falla, falla temprana, intermedia y tardía. Cada
+celda tiene tres repeticiones, para un total de 12 runs de 55 minutos, más el
+tiempo variable de preflight, drenaje y estabilización.
+
+> **Paso previo obligatorio:** no prepare ni ejecute este lote hasta que el
+> repositorio académico contenga un generador ciego de puntajes probado contra
+> `confirmatory_manifest_v1`. Ese generador debe producir las diez variantes y
+> el manifiesto de predicciones con hashes sin leer asignaciones, fases ni datos
+> de referencia. Implementarlo y validarlo es el siguiente paso técnico.
+
+Prepare la asignación antes de subir los servicios. Este paso no ejecuta runs:
+
+Desde el repositorio académico hermano, valide primero el manifiesto
+confirmatorio congelado:
+
+```bash
+python3 experiments/algorithm_comparison/scripts/validate_confirmatory_manifest.py
+```
+
+Después, desde `AIOpsLab`, prepare la asignación:
+
+```bash
+python3 deploy/etl/blind_batch.py prepare \
+  --protocol deploy/etl/blind_protocol_v1.json
+```
+
+Por defecto se usa
+`../semillero-monitoreo-distribuido/experiments/algorithm_comparison/config/confirmatory_manifest_v1.json`.
+Si los repositorios no son hermanos, indique su ubicación con
+`--confirmatory-manifest`. La preparación copia sus bytes a
+`confirmatory-manifest.snapshot.json` y añade el SHA-256 a los archivos público
+y de compromiso; cualquier diferencia posterior hace fallar `verify`.
+
+El comando imprime el directorio del lote. Conserve ese valor como
+`<batch-dir>` y verifique el compromiso antes de desplegar:
+
+```bash
+python3 deploy/etl/blind_batch.py verify --batch-dir <batch-dir>
+```
+
+`commitment.json`, `confirmatory-manifest.snapshot.json` y
+`public-cohort.json` pueden entregarse al responsable del modelado.
+`allocation.sealed.json` contiene la correspondencia entre código y celda,
+tiene permisos `0600` y debe quedar bajo custodia del operador. Es una
+separación ciega procedimental, no cifrado: el analista no debe leer el archivo
+sellado, los paquetes por run, `phase-timeline.json`, las tablas de condiciones
+ni los datos de referencia antes de congelar sus predicciones.
+
+Después de `redeploy`, `status`, `validate` y la estabilización indicada en la
+sección 3, ejecute el lote completo:
+
+```bash
+python3 deploy/etl/blind_batch.py run --batch-dir <batch-dir>
+```
+
+El orquestador conserva las mismas salvaguardas de disco, plano de control,
+bandera, lag, duración, estabilización Gold y empaquetado. Cada run tiene una
+sola repetición, escala `1.0`, no permite `--allow-backlog` y queda clasificada
+como `blind_confirmatory_candidate`. El control ejecuta únicamente calentamiento
+y operación normal; nunca modifica la bandera. Si una run falla, el lote se
+detiene y conserva el estado y su paquete para diagnóstico. Corrija la causa y
+reanude con el mismo comando: las runs completas no se repiten.
+
+El analista debe producir un archivo con una fila por código opaco y las
+predicciones, puntuaciones o rankings acordados, sin conocer la asignación. Una
+vez cerrado ese archivo, congele su hash y revele la asignación:
+
+```bash
+python3 deploy/etl/blind_batch.py reveal \
+  --batch-dir <batch-dir> \
+  --predictions <predictions-file>
+```
+
+La revelación solo se permite si las 12 runs están completas y tienen
+`run_id`. El comando crea `predictions-commitment.json` y
+`allocation-revealed.json`; así puede demostrarse que los resultados del modelo
+existían antes de conocer las condiciones. No edite manualmente los cinco
+archivos de control del lote.
+
 ## 6. Conservar y consultar la evidencia
 
 Cada repetición recibe un UUID y crea:
