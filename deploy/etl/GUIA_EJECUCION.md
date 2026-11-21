@@ -91,12 +91,14 @@ kubectl get pods -n kube-system \
   -l tier=control-plane
 ```
 
-El preflight exige siete lecturas consecutivas —30 segundos entre la primera y
-la última— en las que `etcd`, API server,
+El preflight se repite antes de cada repetición y exige lecturas consecutivas
+estables en las que `etcd`, API server,
 controller manager y scheduler estén listos y con los mismos UID y contadores
-de reinicio. Cada repetición vuelve a comprobarlos y compara el estado final
-con el inicial. Si un componente se reinicia durante la observación, la run se
-marca `failed` aunque las cuatro fases hayan terminado.
+de reinicio. También vuelve a validar el ETL y rechaza un lag de Kafka no
+medible o superior al umbral. Cada repetición compara el estado final del plano
+de control con el inicial y confirma que la bandera conserva la variante base
+inactiva. Si un componente se reinicia, cambia la variante base o la condición
+ya está activa, la run se marca `failed` o no llega a iniciarse.
 
 El perfil local usa el backend RocksDB con checkpoints incrementales cada 60
 segundos, una pausa mínima de 30 segundos y uno solo concurrente. El primer
@@ -156,9 +158,12 @@ python3 deploy/etl/experiment.py
 Cada repetición contiene 5 minutos de calentamiento, 10 de referencia, 10 con
 `adFailure` y 10 de recuperación. La bandera se restaura en el bloque de cierre
 aunque falle la ejecución. El script espera primero 45 segundos y después exige
-tres conteos Gold no vacíos e iguales, separados por diez segundos. Si el corte
-no se estabiliza en tres minutos, el paquete registra el error y la repetición
-no debe aceptarse como nominal.
+tres conteos Gold no vacíos e iguales, separados por diez segundos, mientras el
+lag de Kafka permanece medible y dentro del umbral. Si el corte no se estabiliza
+en cinco minutos, el empaquetado falla, la repetición se marca `failed` y el
+lote se detiene. El ejecutor también compara la duración real de cada fase con
+la programada; una suspensión del host o una desviación superior al 2 % —con
+un margen mínimo de cinco segundos— invalida la repetición.
 
 El manifiesto también conserva `host_disk_before`, `control_plane_before` y
 `control_plane_after`. Si una repetición falla, mantenga su paquete y vuelva a

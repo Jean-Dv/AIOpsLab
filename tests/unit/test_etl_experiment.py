@@ -1,5 +1,7 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +33,18 @@ class ExperimentTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             experiment.select_fault(document, "missing")
 
+    def test_fault_baseline_rejects_active_variant(self):
+        document = {"flags": {"adFailure": {"defaultVariant": "on"}}}
+        with self.assertRaisesRegex(RuntimeError, "is active"):
+            experiment.require_fault_baseline(document, "adFailure")
+
+    def test_fault_baseline_rejects_change_between_repetitions(self):
+        document = {"flags": {"adFailure": {"defaultVariant": "disabled"}}}
+        with self.assertRaisesRegex(RuntimeError, "changed from baseline"):
+            experiment.require_fault_baseline(
+                document, "adFailure", expected_variant="off",
+            )
+
     def test_wait_for_gold_stability_resets_after_count_change(self):
         samples = [
             [{"windows": "10"}],
@@ -46,6 +60,127 @@ class ExperimentTest(unittest.TestCase):
 
         self.assertEqual(11, result["final_windows"])
         self.assertEqual(4, len(result["history"]))
+
+    def test_consumer_lag_must_be_measurable_for_nominal_run(self):
+        with self.assertRaisesRegex(RuntimeError, "Could not determine"):
+            experiment.require_bounded_consumer_lag(
+                {"total_lag": None}, max_lag=1000, allow_backlog=False,
+            )
+
+    def test_consumer_lag_rejects_backlog_above_limit(self):
+        with self.assertRaisesRegex(RuntimeError, "above 1000"):
+            experiment.require_bounded_consumer_lag(
+                {"total_lag": 1001}, max_lag=1000, allow_backlog=False,
+            )
+
+    def test_wait_for_pipeline_stability_requires_gold_and_bounded_lag(self):
+        windows = [
+            [{"windows": "10"}],
+            [{"windows": "10"}],
+            [{"windows": "10"}],
+            [{"windows": "10"}],
+            [{"windows": "10"}],
+        ]
+        lags = [
+            {"total_lag": 2000},
+            {"total_lag": 900},
+            {"total_lag": 800},
+            {"total_lag": 700},
+            {"total_lag": 600},
+        ]
+        with patch.object(experiment, "clickhouse_query", side_effect=windows), \
+                patch.object(experiment, "consumer_lag", side_effect=lags), \
+                patch.object(experiment.time, "sleep"):
+            result = experiment.wait_for_pipeline_stability(
+                "run-1", max_lag=1000, allow_backlog=False,
+                stable_polls=3, poll_seconds=0, timeout_seconds=1,
+            )
+
+        self.assertEqual(700, result["final_consumer_lag"])
+        self.assertEqual(4, len(result["history"]))
+
+    def test_phase_duration_guard_rejects_suspension(self):
+        event = {
+            "condition": "recovery",
+            "expected_duration_seconds": 600.0,
+            "observed_duration_seconds": 48_300.0,
+            "duration_tolerance_seconds": 12.0,
+            "duration_valid": False,
+        }
+        with self.assertRaisesRegex(RuntimeError, "may have been suspended"):
+            experiment.require_valid_phase_duration(event)
+
+    def test_phase_duration_guard_accepts_small_scheduler_delay(self):
+        event = {
+            "condition": "normal",
+            "expected_duration_seconds": 600.0,
+            "observed_duration_seconds": 606.0,
+            "duration_tolerance_seconds": 12.0,
+            "duration_valid": True,
+        }
+        experiment.require_valid_phase_duration(event)
+
+    def test_execute_repeats_preflight_before_every_repetition(self):
+        args = SimpleNamespace(
+            scenario="scenario",
+            fault="adFailure",
+            application_version="app-v1",
+            configuration="config-v1",
+            load_profile="load-v1",
+            repetitions=3,
+            warmup=1.0,
+            normal=1.0,
+            fault_duration=1.0,
+            recovery=1.0,
+            stationary_seconds=None,
+            duration_scale=1.0,
+            drain_seconds=0.0,
+            allow_backlog=False,
+            max_lag=1000,
+        )
+        preflight_result = {
+            "host_disk": {"used_percent": 10.0},
+            "kubernetes_control_plane": {"healthy": True, "components": {}},
+        }
+
+        def add_phase(phases, _run_id, _scenario, condition, *_args):
+            event = {"condition": condition, "duration_valid": True}
+            phases.append(event)
+            return event
+
+        with TemporaryDirectory() as temporary:
+            report_dir = Path(temporary) / "reports"
+            runs_dir = report_dir / "runs"
+            with patch.object(experiment, "REPORT_DIR", report_dir), \
+                    patch.object(experiment, "RUNS_DIR", runs_dir), \
+                    patch.object(experiment, "preflight", return_value=preflight_result) \
+                    as preflight_check, \
+                    patch.object(experiment, "flag_document", return_value={
+                        "flags": {"adFailure": {
+                            "defaultVariant": "off",
+                            "variants": {"off": False, "on": True},
+                        }}
+                    }), \
+                    patch.object(experiment, "offsets", return_value={
+                        topic: 0 for topic in experiment.TOPICS
+                    }), \
+                    patch.object(experiment, "consumer_lag", return_value={
+                        "total_lag": 0, "raw": ""
+                    }), \
+                    patch.object(experiment, "flink_snapshot", return_value={}), \
+                    patch.object(experiment, "initialize_package"), \
+                    patch.object(experiment, "clickhouse_insert"), \
+                    patch.object(experiment, "run_snapshot", return_value="revision"), \
+                    patch.object(experiment, "append_phase", side_effect=add_phase), \
+                    patch.object(experiment, "set_fault"), \
+                    patch.object(
+                        experiment, "require_unchanged_control_plane",
+                        return_value={"healthy": True, "components": {}},
+                    ), \
+                    patch.object(experiment, "collect_package"):
+                experiment.execute(args)
+
+        self.assertEqual(3, preflight_check.call_count)
 
     def test_set_fault_uses_unique_revision_and_extended_rollout_timeout(self):
         document = {

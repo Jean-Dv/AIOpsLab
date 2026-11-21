@@ -183,6 +183,10 @@ services:
   jobmanager:
     build:
       context: ./flink-job
+      # Docker's bridge DNS can be unable to reach the host-provided resolver
+      # (notably with systemd-resolved/Tailscale). This is build-only; the
+      # running Flink services still use the Compose network.
+      network: host
       args:
         FLINK_VERSION: ${FLINK_VERSION:-1.20.1-scala_2.12-java17}
     image: aiopslab/telemetry-etl:2.0.0

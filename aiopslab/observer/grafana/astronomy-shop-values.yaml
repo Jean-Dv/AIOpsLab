@@ -6,6 +6,25 @@ grafana:
   enabled: false
 
 components:
+  # The chart defaults these JVM services to a 300Mi hard limit. Under the
+  # experiment load both can cross that boundary and get OOM-killed, which in
+  # turn creates enough Kubernetes churn to compromise a local Kind control
+  # plane. Keep scheduling requests conservative while leaving runtime
+  # headroom for JVM native memory and telemetry instrumentation.
+  ad:
+    resources:
+      requests:
+        memory: 384Mi
+      limits:
+        memory: 512Mi
+
+  fraud-detection:
+    resources:
+      requests:
+        memory: 384Mi
+      limits:
+        memory: 512Mi
+
   frontend-proxy:
     service:
       type: NodePort
@@ -104,8 +123,8 @@ opentelemetry-collector:
     service:
       pipelines:
         traces:
-          exporters: [otlp_grpc/jaeger, debug, span_metrics, kafka/traces]
+          exporters: [otlp_grpc/jaeger, span_metrics, kafka/traces]
         metrics:
-          exporters: [otlp_http/prometheus, debug, kafka/metrics]
+          exporters: [otlp_http/prometheus, kafka/metrics]
         logs:
-          exporters: [opensearch, debug, kafka/logs]
+          exporters: [opensearch, kafka/logs]

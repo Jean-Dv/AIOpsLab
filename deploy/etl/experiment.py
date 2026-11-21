@@ -26,6 +26,13 @@ RUNS_DIR = REPORT_DIR / "runs"
 TOPICS = ("otlp.metrics.v1", "otlp.logs.v1", "otlp.traces.v1")
 FLAGD_ROLLOUT_TIMEOUT_SECONDS = 600
 MAX_HOST_DISK_USAGE_PERCENT = 90.0
+CONTROL_PLANE_STABLE_POLLS = 61
+CONTROL_PLANE_POLL_SECONDS = 5.0
+CONTROL_PLANE_STABILITY_TIMEOUT_SECONDS = 900.0
+PHASE_DURATION_TOLERANCE_RATIO = 0.02
+PHASE_DURATION_MIN_TOLERANCE_SECONDS = 5.0
+PIPELINE_STABILITY_TIMEOUT_SECONDS = 300.0
+ACTIVE_FAULT_VARIANTS = {"on", "100%", "failure", "enabled", "true"}
 CONTROL_PLANE_COMPONENTS = {
     "etcd",
     "kube-apiserver",
@@ -177,6 +184,23 @@ def consumer_lag() -> dict[str, object]:
     return {"total_lag": total if parsed else None, "raw": raw}
 
 
+def require_bounded_consumer_lag(
+    lag: dict[str, object], max_lag: int, allow_backlog: bool,
+) -> None:
+    total_lag = lag.get("total_lag")
+    if total_lag is None and not allow_backlog:
+        raise RuntimeError(
+            "Could not determine the Flink Kafka consumer lag; "
+            "a nominal run requires a measurable bounded backlog"
+        )
+    if total_lag is not None and int(total_lag) > max_lag and not allow_backlog:
+        raise RuntimeError(
+            f"Flink has a Kafka backlog of {total_lag} records, above {max_lag}; "
+            "wait until it is bounded "
+            "or use --allow-backlog only for a diagnostic run"
+        )
+
+
 def host_disk_snapshot() -> dict[str, object]:
     usage = shutil.disk_usage(ROOT)
     # Match df(1): reserved filesystem blocks are not available to the runner.
@@ -239,8 +263,11 @@ def kubernetes_control_plane_snapshot() -> dict[str, object]:
     }
 
 
-def wait_for_control_plane(stable_polls: int = 7, poll_seconds: float = 5.0,
-                           timeout_seconds: float = 120.0) -> dict[str, object]:
+def wait_for_control_plane(
+    stable_polls: int = CONTROL_PLANE_STABLE_POLLS,
+    poll_seconds: float = CONTROL_PLANE_POLL_SECONDS,
+    timeout_seconds: float = CONTROL_PLANE_STABILITY_TIMEOUT_SECONDS,
+) -> dict[str, object]:
     deadline = time.monotonic() + timeout_seconds
     consecutive = 0
     previous_signature: tuple[tuple[object, ...], ...] | None = None
@@ -320,12 +347,7 @@ def preflight(allow_backlog: bool, max_lag: int) -> dict[str, object]:
     if active_count:
         raise RuntimeError(f"There are {active_count} experiment runs marked running")
     lag = consumer_lag()
-    if lag["total_lag"] is not None and lag["total_lag"] > max_lag and not allow_backlog:
-        raise RuntimeError(
-            f"Flink has a Kafka backlog of {lag['total_lag']} records, above {max_lag}; "
-            "wait until it is bounded "
-            "or use --allow-backlog only for a diagnostic run"
-        )
+    require_bounded_consumer_lag(lag, max_lag, allow_backlog)
     jobs = flink_snapshot()
     running = [job for job in jobs.get("jobs/overview", {}).get("jobs", [])
                if job.get("state") == "RUNNING"]
@@ -454,14 +476,77 @@ def wait_for_gold_stability(run_id: str, stable_polls: int = 3,
         time.sleep(poll_seconds)
 
 
+def wait_for_pipeline_stability(
+    run_id: str,
+    max_lag: int,
+    allow_backlog: bool,
+    stable_polls: int = 3,
+    poll_seconds: float = 10.0,
+    timeout_seconds: float = PIPELINE_STABILITY_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    """Require a stable non-empty Gold cut and, normally, bounded Kafka lag."""
+    quoted_run = run_id.replace("'", "''")
+    deadline = time.monotonic() + timeout_seconds
+    previous: int | None = None
+    consecutive = 0
+    history: list[dict[str, object]] = []
+    while True:
+        rows = clickhouse_query(
+            "SELECT count() AS windows "
+            "FROM aiopslab.gold_service_window_v2_latest "
+            f"WHERE run_id = '{quoted_run}'"
+        )
+        current = int(rows[0]["windows"]) if rows else 0
+        lag = consumer_lag()
+        total_lag = lag.get("total_lag")
+        lag_bounded = allow_backlog or (
+            total_lag is not None and int(total_lag) <= max_lag
+        )
+        history.append({
+            "captured_at": iso(),
+            "windows": current,
+            "consumer_lag": total_lag,
+            "lag_bounded": lag_bounded,
+        })
+        if current > 0 and current == previous and lag_bounded:
+            consecutive += 1
+        elif current > 0 and lag_bounded:
+            consecutive = 1
+        else:
+            consecutive = 0
+        previous = current
+        if consecutive >= stable_polls:
+            return {
+                "required_equal_polls": stable_polls,
+                "poll_seconds": poll_seconds,
+                "maximum_accepted_lag": max_lag,
+                "lag_check_bypassed": allow_backlog,
+                "final_windows": current,
+                "final_consumer_lag": total_lag,
+                "history": history,
+            }
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Pipeline did not reach a stable non-empty Gold cut with Kafka lag "
+                f"at or below {max_lag} for run {run_id} within "
+                f"{timeout_seconds} seconds; last windows={current}, "
+                f"last lag={total_lag}"
+            )
+        time.sleep(poll_seconds)
+
+
 def collect_package(run_dir: Path, run_id: str, before: dict[str, object],
                     after: dict[str, object], phases: list[dict[str, object]],
-                    drain_seconds: float, manifest: dict[str, object]) -> None:
+                    drain_seconds: float, manifest: dict[str, object],
+                    max_lag: int, allow_backlog: bool) -> None:
     if drain_seconds > 0:
         wait_phase(drain_seconds, "drain")
-    after["gold_stability"] = wait_for_gold_stability(run_id)
+    after["gold_stability"] = wait_for_pipeline_stability(
+        run_id, max_lag=max_lag, allow_backlog=allow_backlog,
+    )
     after["flink"] = flink_snapshot()
     after["consumer"] = consumer_lag()
+    require_bounded_consumer_lag(after["consumer"], max_lag, allow_backlog)
     write_json(run_dir / "offsets-and-checkpoints.json", {"before": before, "after": after})
     write_json(run_dir / "phase-timeline.json", phases)
 
@@ -526,6 +611,23 @@ def select_fault(document: dict[str, object], requested: str) -> str:
     raise KeyError(f"Could not find {requested!r}; candidates: {', '.join(candidates) or 'none'}")
 
 
+def require_fault_baseline(
+    document: dict[str, object], flag: str, expected_variant: str | None = None,
+) -> str:
+    observed = str(document["flags"][flag]["defaultVariant"])
+    if observed.lower() in ACTIVE_FAULT_VARIANTS:
+        raise RuntimeError(
+            f"Fault flag {flag} is active with variant {observed!r}; "
+            "restore its baseline before starting the batch"
+        )
+    if expected_variant is not None and observed != expected_variant:
+        raise RuntimeError(
+            f"Fault flag {flag} changed from baseline {expected_variant!r} "
+            f"to {observed!r} between repetitions"
+        )
+    return observed
+
+
 def set_fault(document: dict[str, object], flag: str, active: bool, original: str) -> None:
     entry = document["flags"][flag]
     if active:
@@ -567,14 +669,45 @@ def set_fault(document: dict[str, object], flag: str, active: bool, original: st
         )
 
 
-def wait_phase(seconds: float, label: str) -> None:
-    deadline = time.monotonic() + seconds
+def wait_phase(seconds: float, label: str) -> dict[str, float]:
+    wall_started = time.time()
+    monotonic_started = time.monotonic()
+    deadline = wall_started + seconds
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - time.time()
         if remaining <= 0:
-            return
+            return {
+                "wall_elapsed_seconds": time.time() - wall_started,
+                "monotonic_elapsed_seconds": time.monotonic() - monotonic_started,
+            }
         print(f"  {label}: {int(remaining)} s remaining", flush=True)
         time.sleep(min(30, remaining))
+
+
+def phase_duration_tolerance(expected_seconds: float) -> float:
+    return max(
+        PHASE_DURATION_MIN_TOLERANCE_SECONDS,
+        expected_seconds * PHASE_DURATION_TOLERANCE_RATIO,
+    )
+
+
+def require_valid_phase_duration(event: dict[str, object]) -> None:
+    if event.get("duration_valid"):
+        return
+    raise RuntimeError(
+        f"Phase {event['condition']} lasted "
+        f"{float(event['observed_duration_seconds']):.3f}s; expected "
+        f"{float(event['expected_duration_seconds']):.3f}s +/- "
+        f"{float(event['duration_tolerance_seconds']):.3f}s. "
+        "The run may have been suspended or delayed and is not nominal."
+    )
+
+
+def append_phase(phases: list[dict[str, object]], *args: object) -> dict[str, object]:
+    event = phase(*args)
+    phases.append(event)
+    require_valid_phase_duration(event)
+    return event
 
 
 def phase(run_id: str, scenario_id: str, condition: str, duration: float,
@@ -600,7 +733,7 @@ def phase(run_id: str, scenario_id: str, condition: str, duration: float,
         "phase_start": iso(start),
         "phase_end": None,
     })
-    wait_phase(duration, condition)
+    timing = wait_phase(duration, condition)
     event["phase_end_ms"] = now_ms()
     publish_control(event)
     clickhouse_insert("experiment_conditions", {
@@ -612,16 +745,25 @@ def phase(run_id: str, scenario_id: str, condition: str, duration: float,
         "phase_start": iso(start),
         "phase_end": iso(int(event["phase_end_ms"])),
     })
+    observed_duration = (int(event["phase_end_ms"]) - start) / 1000
+    tolerance = phase_duration_tolerance(duration)
+    event.update({
+        "expected_duration_seconds": duration,
+        "observed_duration_seconds": observed_duration,
+        "duration_tolerance_seconds": tolerance,
+        "duration_valid": abs(observed_duration - duration) <= tolerance,
+        "wait_wall_elapsed_seconds": timing["wall_elapsed_seconds"],
+        "wait_monotonic_elapsed_seconds": timing["monotonic_elapsed_seconds"],
+    })
     return event
 
 
 def execute(args: argparse.Namespace) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    preflight_report = preflight(args.allow_backlog, args.max_lag)
     document = flag_document()
     fault = select_fault(document, args.fault)
-    original_variant = document["flags"][fault]["defaultVariant"]
+    original_variant = require_fault_baseline(document, fault)
     report: dict[str, object] = {
         "scenario_id": args.scenario,
         "fault_type": fault,
@@ -644,16 +786,31 @@ def execute(args: argparse.Namespace) -> None:
     )
 
     for repetition in range(1, args.repetitions + 1):
-        disk_before = require_disk_capacity()
-        control_plane_before = wait_for_control_plane()
+        # Repeat the complete guard immediately before every repetition. A
+        # healthy batch start does not guarantee bounded lag after the prior run.
+        preflight_report = preflight(args.allow_backlog, args.max_lag)
+        document = flag_document()
+        resolved_fault = select_fault(document, args.fault)
+        if resolved_fault != fault:
+            raise RuntimeError(
+                f"Fault flag resolved to {resolved_fault!r}; expected {fault!r}"
+            )
+        require_fault_baseline(document, fault, original_variant)
+        preflight_report["fault_baseline_variant"] = original_variant
+        disk_before = preflight_report["host_disk"]
+        control_plane_before = preflight_report["kubernetes_control_plane"]
         run_id = str(uuid.uuid4())
         run_dir = RUNS_DIR / run_id
         started = now_ms()
         before = offsets()
+        before_consumer = consumer_lag()
+        require_bounded_consumer_lag(
+            before_consumer, args.max_lag, args.allow_backlog,
+        )
         before_snapshot: dict[str, object] = {
             "captured_at": iso(started),
             "topic_end_offsets": before,
-            "consumer": consumer_lag(),
+            "consumer": before_consumer,
             "flink": flink_snapshot(),
         }
         status = "running"
@@ -701,19 +858,28 @@ def execute(args: argparse.Namespace) -> None:
         fault_change_attempted = False
         try:
             if stationary:
-                phases.append(phase(run_id, args.scenario, "normal", durations["normal"]))
+                append_phase(
+                    phases, run_id, args.scenario, "normal", durations["normal"],
+                )
             else:
-                phases.append(phase(run_id, args.scenario, "warmup", durations["warmup"]))
-                phases.append(phase(run_id, args.scenario, "normal", durations["normal"]))
+                append_phase(
+                    phases, run_id, args.scenario, "warmup", durations["warmup"],
+                )
+                append_phase(
+                    phases, run_id, args.scenario, "normal", durations["normal"],
+                )
                 fault_change_attempted = True
                 set_fault(document, fault, True, original_variant)
-                phases.append(phase(
-                    run_id, args.scenario, "fault", durations["fault"], fault, "ad",
-                ))
+                append_phase(
+                    phases, run_id, args.scenario, "fault", durations["fault"],
+                    fault, "ad",
+                )
                 set_fault(document, fault, False, original_variant)
                 fault_change_attempted = False
                 manifest["fault_restored"] = True
-                phases.append(phase(run_id, args.scenario, "recovery", durations["recovery"]))
+                append_phase(
+                    phases, run_id, args.scenario, "recovery", durations["recovery"],
+                )
             manifest["control_plane_after"] = require_unchanged_control_plane(
                 control_plane_before
             )
@@ -777,12 +943,33 @@ def execute(args: argparse.Namespace) -> None:
             try:
                 collect_package(
                     run_dir, run_id, before_snapshot, after_snapshot, phases,
-                    args.drain_seconds, manifest,
+                    args.drain_seconds, manifest, args.max_lag, args.allow_backlog,
                 )
             except Exception as package_error:
                 manifest["package_error"] = str(package_error)
+                package_must_fail_run = status != "failed" and not args.allow_backlog
+                if package_must_fail_run:
+                    status = "failed"
+                    manifest["status"] = status
+                    report["runs"][-1]["status"] = status
+                    clickhouse_insert("experiment_runs", {
+                        "run_id": run_id,
+                        "scenario_id": args.scenario,
+                        "application_version": args.application_version,
+                        "configuration": args.configuration,
+                        "load_profile": args.load_profile,
+                        "collection_start": iso(started),
+                        "collection_end": iso(ended),
+                        "repetition": repetition,
+                        "status": status,
+                    })
+                    target.write_text(json.dumps(report, indent=2), encoding="utf-8")
                 write_json(run_dir / "manifest.json", manifest)
                 print(f"Package collection warning: {package_error}", flush=True)
+                if package_must_fail_run:
+                    raise RuntimeError(
+                        "The run failed its final pipeline/package safeguards"
+                    ) from package_error
             print(f"Partial report: {target}", flush=True)
             print(f"Run package: {run_dir}", flush=True)
 

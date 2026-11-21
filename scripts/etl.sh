@@ -43,15 +43,35 @@ compose() {
 
 ensure_cluster() {
   if kind get clusters 2>/dev/null | grep -qx kind; then
+    if ! kubectl config get-contexts kind-kind -o name 2>/dev/null | \
+        grep -qx kind-kind; then
+      echo "Kind cluster 'kind' exists but its kubectl context is missing." >&2
+      echo "Delete the incomplete cluster with: kind delete cluster --name kind" >&2
+      return 1
+    fi
+    if ! kubectl --context kind-kind get nodes >/dev/null 2>&1; then
+      echo "Kind cluster 'kind' exists but its Kubernetes API is unavailable." >&2
+      echo "Delete the incomplete cluster with: kind delete cluster --name kind" >&2
+      return 1
+    fi
     kubectl config use-context kind-kind >/dev/null
     return
   fi
+  local etcd_data_dir="/dev/shm/aiopslab-kind-etcd"
+  if [[ ! -d /dev/shm ]]; then
+    echo "Shared memory filesystem /dev/shm is required for the Kind etcd volume." >&2
+    return 1
+  fi
+  mkdir -p "${etcd_data_dir}"
+  # A new Kind cluster must never reuse membership data from an old cluster.
+  # The path is dedicated to this project's ephemeral etcd instance.
+  find "${etcd_data_dir}" -mindepth 1 -delete
   local config="kind/kind-config-x86.yaml"
   if [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
     config="kind/kind-config-arm.yaml"
   fi
   kind create cluster --name kind --config "${PROJECT_DIR}/${config}"
-  kubectl wait --for=condition=Ready node --all --timeout=300s
+  kubectl --context kind-kind wait --for=condition=Ready node --all --timeout=300s
 }
 
 create_kafka_route() {
